@@ -4,22 +4,42 @@ use core::ptr;
 use log::info;
 use spin::Mutex;
 
+// Estrutura Pai que envelopa o verdadeiro alocador de memória em um Mutex
 pub struct Locked<T> {
     inner: Mutex<T>,
 }
 
 impl<T> Locked<T> {
+    //Função New para o conteúdo interior
     pub const fn new(inner: T) -> Self {
         Self {
             inner: Mutex::new(inner),
         }
     }
 
+    //Função Lock para o conteúdo interior
     pub fn lock(&self) -> spin::MutexGuard<'_, T> {
         self.inner.lock()
     }
 }
-
+/*
+    |---------------------------------------------------------------------------|
+    |                      Implementando a Trait GlobalAlloc                    |
+    |                             Funções necessárias:                          |
+    |---------------------------------------------------------------------------|
+    | alloc(&self, layout:Layout) -> *mut u8                                    |
+    | --    Alocar um bloco de memória seguindo um layout determinado           |
+    |---------------------------------------------------------------------------|
+    | dealloc(&self, ptr: *mut u8, layout: Layout)                              |
+    | --    Liberar um bloco de memória                                         |
+    |---------------------------------------------------------------------------|
+    | alloc_zeroed(&self, layout: Layout) -> *mut u8                            |
+    | --    Alocar um bloco completamente limpo                                 |
+    |---------------------------------------------------------------------------|
+    | realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8  |
+    | --    Realocar um bloco de memória, preservando seu conteúdo              |
+    |---------------------------------------------------------------------------|
+*/
 unsafe impl GlobalAlloc for Locked<MemAllocator> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe { self.lock().alloc(layout) }
@@ -38,12 +58,77 @@ unsafe impl GlobalAlloc for Locked<MemAllocator> {
     }
 }
 
+/*
+    |---------------------------------------------------------------------------|
+    |               Estrutura do Nó de Memória Livre (FreeNode)                 |
+    |---------------------------------------------------------------------------|
+    | O FreeNode é gravado diretamente no início do bloco de memória livre:     |
+    |                                                                           |
+    |  Endereço do Bloco Libre                                                  |
+    |  +-----------------------+------------------------------------------+     |
+    |  |  FreeNode (Header)    |          Payload Não Utilizado           |     |
+    |  |  [next]  | [prev]     |                                          |     |
+    |  |  Option  | Option     |                                          |     |
+    |  +----+---------+--------+------------------------------------------+     |
+    |       |         |                                                         |
+    |       |         +----> Ponteiro (usize) para nó anterior                  |
+    |       +--------------> Ponteiro (usize) para próximo nó                   |
+    |---------------------------------------------------------------------------|
+    | Campos:                                                                   |
+    |   next - Endereço do próximo bloco livre de mesma ordem k na lista.       |
+    |   prev - Endereço do bloco livre anterior de mesma ordem k na lista.      |
+    |---------------------------------------------------------------------------|
+*/
 #[repr(C)]
 pub struct FreeNode {
     pub next: Option<usize>,
     pub prev: Option<usize>,
 }
 
+/*
+    |---------------------------------------------------------------------------|
+    |   Struct de controle do Heap - Alocador Buddy (Buddy Allocator)           |
+    |---------------------------------------------------------------------------|
+    |   heap_start   - Endereço físico/virtual do início da região do Heap.     |
+    |   heap_end     - Endereço físico/virtual do fim do Heap (start + size).   |
+    |   leaf_size    - Tamanho mínimo de um bloco livre (Folha = 64 bytes).     |
+    |   leaf_maximum - Maior ordem (k) permitida baseada no tamanho do Heap.    |
+    |   free_lists   - Array de listas encadeadas. O índice 'k' guarda a cabeça |
+    |                  da lista de blocos livres de tamanho (leaf_size << k).   |
+    |---------------------------------------------------------------------------|
+    |                         Funções de controle                               |
+    |---------------------------------------------------------------------------|
+    | empty() -> Self                                                           |
+    | -- Inicializa a estrutura do alocador zerada e sem blocos associados.     |
+    |---------------------------------------------------------------------------|
+    | log_free_list(&self)                                                      |
+    | -- Imprime no log o estado atual das listas de blocos livres.             |
+    |---------------------------------------------------------------------------|
+    | init(&mut self, heap_start: usize, heap_size: usize)                      |
+    | -- Mapeia a memória do heap e popula as free_lists dividindo em blocos.   |
+    |---------------------------------------------------------------------------|
+    | push_front(&mut self, k: usize, block_addr: usize)                        |
+    | -- Insere um bloco de ordem k no início da lista encadeada free_lists[k]. |
+    |---------------------------------------------------------------------------|
+    | pop_front(&mut self, k: usize) -> Option<usize>                           |
+    | -- Remove e retorna o primeiro bloco livre disponível na ordem k.         |
+    |---------------------------------------------------------------------------|
+    | remove_from_list(&mut self, k: usize, target_addr: usize) -> bool         |
+    | -- Remove um bloco específico (target_addr) da lista de ordem k.          |
+    |---------------------------------------------------------------------------|
+    | alloc(&mut self, layout: Layout) -> *mut u8                               |
+    | -- Encontra/divide um bloco ideal para suprir o Layout solicitado.        |
+    |---------------------------------------------------------------------------|
+    | dealloc(&mut self, ptr: *mut u8, layout: Layout)                          |
+    | -- Libera o bloco apontado e realiza fusão (coalescing) com seu Buddy.    |
+    |---------------------------------------------------------------------------|
+    | alloc_zeroed(&mut self, layout: Layout) -> *mut u8                        |
+    | -- Aloca memória e garante que todo o conteúdo seja preenchido com zero.  |
+    |---------------------------------------------------------------------------|
+    | realloc(&mut self, ptr: *mut u8, layout: Layout, new_size: usize)         |
+    | -- Realoca memória preservando os dados do bloco antigo para o novo.      |
+    |---------------------------------------------------------------------------|
+*/
 pub struct MemAllocator {
     heap_start: usize,
     heap_end: usize,
@@ -61,7 +146,7 @@ impl MemAllocator {
             free_lists: [None; 64],
         }
     }
-
+    
     pub fn log_free_list(&self) {
         for f in self.free_lists.into_iter().flatten() {
             info!("{:#?}", f);
@@ -191,6 +276,21 @@ impl MemAllocator {
         false
     }
 
+    /*
+        |---------------------------------------------------------------------------|
+        |                      Operação de Divisão (Splitting)                      |
+        |---------------------------------------------------------------------------|
+        | Quando não há blocos disponíveis na ordem requisitada (k_req), o alocador |
+        | busca na ordem superior (current_k) e divide o bloco ao meio (Buddies):  |
+        |                                                                           |
+        | Ordem k+1:  [                   Bloco Original                    ]       |
+        |                                       |                                   |
+        |                                 (Divisão/Split)                           |
+        |                                       v                                   |
+        | Ordem k:    [   Bloco Alocado / Principal   ] [      Bloco Buddy      ]   |
+        |                                                   (Enviado p/ free_list)  |
+        |---------------------------------------------------------------------------|
+    */
     unsafe fn alloc(&mut self, layout: Layout) -> *mut u8 {
         let size: usize = layout.size().max(layout.align()).max(self.leaf_size);
         // Arredondando para a próxima potência de 2
@@ -207,7 +307,7 @@ impl MemAllocator {
         }
 
         if current_k > self.leaf_maximum {
-            return ptr::null_mut(); //Out Of Memory
+            return ptr::null_mut(); //Out Of Memory (OOM)
         }
 
         let block_addr = unsafe { self.pop_front(current_k).unwrap() };
@@ -224,6 +324,25 @@ impl MemAllocator {
         block_addr as *mut u8
     }
 
+    /*
+        |---------------------------------------------------------------------------|
+        |                     Operação de Fusão (Coalescing)                        |
+        |---------------------------------------------------------------------------|
+        | Na desalocação, calcula-se o endereço do Buddy via operação XOR:          |
+        |   buddy_offset = relative_offset ^ block_size                             |
+        |                                                                           |
+        | Se o Buddy estiver livre (encontrado em free_lists[k]):                   |
+        | 1. Remove o Buddy da free_lists[k].                                       |
+        | 2. Unifica os dois blocos formando um bloco de ordem superior (k + 1).    |
+        | 3. Repete o processo iterativamente.                                      |
+        |                                                                           |
+        | Ordem k:    [ Bloco Desalocado ] + [ Buddy Livre Encontrado ]             |
+        |                                    |                                      |
+        |                                 (Fusão)                                   |
+        |                                    v                                      |
+        | Ordem k+1:  [                Bloco Fundido Resultante                 ]   |
+        |---------------------------------------------------------------------------|
+    */
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
         let mut block_addr: usize = ptr as usize;
 
@@ -291,6 +410,7 @@ impl MemAllocator {
             let copy_size = layout.size().min(new_size);
 
             unsafe {
+                // Equivalente ao memcpy em C
                 ptr::copy_nonoverlapping(ptr, new_ptr, copy_size);
 
                 self.dealloc(ptr, layout);
