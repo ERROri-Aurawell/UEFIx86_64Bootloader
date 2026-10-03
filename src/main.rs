@@ -1,11 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::alloc::{GlobalAlloc, Layout};
-use core::ptr;
-
 use log::info;
-use spin::Mutex;
 
 use uefi::boot::{self, MemoryType};
 use uefi::mem::memory_map::{self, MemoryMap};
@@ -13,6 +9,10 @@ use uefi::prelude::*;
 
 mod allocator;
 use allocator::alloc::{Locked, MemAllocator};
+
+mod drivers;
+use drivers::iso9660::ISO9660;
+use drivers::controller::{FileType, File};
 
 #[global_allocator]
 static ALLOCATOR: Locked<MemAllocator> = Locked::new(MemAllocator::empty());
@@ -22,6 +22,8 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use crate::drivers::controller::Find;
 
 #[entry]
 fn main() -> Status {
@@ -54,27 +56,9 @@ fn main() -> Status {
         panic!("Nenhum bloco de memória convencional suficiente encontrado")
     }
 
-    unsafe {
-        ALLOCATOR.lock().init(chosen_start, chosen_size);
-    }
+    // O primeiro, e esperamos que seja o único bloco Unsafe do Main.
+    unsafe { ALLOCATOR.lock().init(chosen_start, chosen_size) };
     info!("Heap estruturado!");
-
-    /*
-    {
-    let test_alloc: Box<i32> = Box::new(8);
-
-    let test_alloc2: Box<usize> = Box::new(usize::MAX);
-
-        if *test_alloc == 8 {
-            info!("Alloc 'Box<i32>' funcional!");
-        }
-
-        if *test_alloc2 == usize::MAX {
-            info!("Alloc 'Box<usize>' funcional!");
-        }
-    }
-    info!("Dealloc (teoricamente) funcional!");
-    */
 
     {
         let string: String = String::from("BOOTLOADER");
@@ -83,5 +67,13 @@ fn main() -> Status {
         info!("{}", content);
     }
 
+    let cd_rom = ISO9660{};
+
+    let _ = cd_rom.find_file("bzImage", FileType::Linux);
+    
+    loop {}
+}
+
+fn linux_jump() -> ! {
     loop {}
 }

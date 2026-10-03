@@ -146,7 +146,7 @@ impl MemAllocator {
             free_lists: [None; 64],
         }
     }
-    
+
     pub fn log_free_list(&self) {
         for f in self.free_lists.into_iter().flatten() {
             info!("{:#?}", f);
