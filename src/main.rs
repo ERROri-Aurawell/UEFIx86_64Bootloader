@@ -11,8 +11,9 @@ mod allocator;
 use allocator::alloc::{Locked, MemAllocator};
 
 mod drivers;
+use drivers::controller::{File, FileType};
 use drivers::iso9660::ISO9660;
-use drivers::controller::{FileType, File};
+use drivers::controller::Find;
 
 #[global_allocator]
 static ALLOCATOR: Locked<MemAllocator> = Locked::new(MemAllocator::empty());
@@ -23,7 +24,6 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::drivers::controller::Find;
 
 #[entry]
 fn main() -> Status {
@@ -60,17 +60,20 @@ fn main() -> Status {
     unsafe { ALLOCATOR.lock().init(chosen_start, chosen_size) };
     info!("Heap estruturado!");
 
-    {
+    /*
+
+        {
         let string: String = String::from("BOOTLOADER");
         let content = format!("{} : STRINGS EM BARE METAL PORAAAAAAA!", string);
 
         info!("{}", content);
     }
+    */
 
-    let cd_rom = ISO9660{};
+    let cd_rom = ISO9660 {};
 
     let _ = cd_rom.find_file("bzImage", FileType::Linux);
-    
+
     loop {}
 }
 
