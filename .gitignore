@@ -1,1 +1,4 @@
 /target
+debug.log
+/dead_code
+/.vscode

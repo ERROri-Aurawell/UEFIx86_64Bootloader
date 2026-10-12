@@ -2,9 +2,9 @@ use core::error::Error;
 
 extern crate alloc;
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::string::String;
 
 use crate::drivers::controller::{ErrorType, File, FileError, FileType, Find};
 use crate::drivers::raw::{DriveType, read_raw_drive};
@@ -12,39 +12,78 @@ use crate::drivers::raw::{DriveType, read_raw_drive};
 use log::info;
 
 //Não precisava, com certeza absoluta
-struct IsoData {
-    pub t_code:             u8,        // 0x01
-    pub std_ident:          [u8 ; 5  ],// "CD001"
-    pub version:            u8,        // 0x01
-                                       // Unused 0x00
-    pub sys_ident:          [u8 ; 32 ],// 0x00 - 0x0F
-    pub vol_ident:          [u8 ; 32 ],// Volume Name
-                                       // [0x00 ; 8]
-    pub vol_space_size:     i32,       // N of Logical Blocks
-                                       // [0x00 ; 32]
-    pub vol_set_size:       i16,       // Size of set (n of disks)
-    pub vol_seq_num:        i16,       // N of this disk
-    pub logic_block_size:   i16,       // Size of logical block (i'm cooked...)
-    pub path_table_size:    i32,       // Size of path table
-    pub loc_type_l_table:   i32,       // LBA loc little-endian
-    pub loc_opt_type_l:     i32,       // optional LBA loc, 0x00 or path, little-endian
-    pub loc_type_m_table:   i32,       // LBA loc path table - big-endian
-    pub loc_opt_type_m:     i32,       // optional LBA loc, 0x00 or path, big-endian
-    pub root_dir_entry:     [u8 ; 34 ],// Directory entry for the root directory	-	Note that this is not an LBA address, it is the actual Directory Record, which contains a single byte Directory Identifier (0x00), hence the fixed 34 byte size.
-    pub vol_set_ident:      [u8 ; 128],// Identifier of the volume set of which this volume is a member.
-    pub publisher_ident:    [u8 ; 128],// The volume publisher. For extended publisher information, the first byte should be 0x5F, followed by the filename of a file in the root directory. If not specified, all bytes should be 0x20.
-    pub data_prep_ident:    [u8 ; 128],// The identifier of the person(s) who prepared the data for this volume. For extended preparation information, the first byte should be 0x5F, followed by the filename of a file in the root directory. If not specified, all bytes should be 0x20.
-    pub application_ident:  [u8 ; 128],// Identifies how the data are recorded on this volume. For extended information, the first byte should be 0x5F, followed by the filename of a file in the root directory. If not specified, all bytes should be 0x20.
-    pub copyright_ident:    [u8 ; 37 ],// Filename of a file in the root directory that contains copyright information for this volume set. If not specified, all bytes should be 0x20.
-    pub abstract_ident:     [u8 ; 37 ],// Filename of a file in the root directory that contains abstract information for this volume set. If not specified, all bytes should be 0x20.
-    pub bib_ident:          [u8 ; 37 ],// Filename of a file in the root directory that contains bibliographic information for this volume set. If not specified, all bytes should be 0x20.
+#[derive(Debug)]
+struct PrimaryVolumeDescriptorData<'a> {
+    pub t_code: u8,             // 0x01
+    pub std_ident: &'a [u8; 5], // "CD001"
+    pub version: u8,            // 0x01
+    // Unused 0x00
+    pub sys_ident: &'a [u8; 32], // 0x00 - 0x0F
+    pub vol_ident: &'a [u8; 32], // Volume Name
+    // [0x00 ; 8]
+    pub vol_space_size: u32, // N of Logical Blocks
+    // [0x00 ; 32]
+    pub vol_set_size: u16,                // Size of set (n of disks)
+    pub vol_seq_num: u16,                 // N of this disk
+    pub logic_block_size: u16,            // Size of logical block (i'm cooked...)
+    pub path_table_size: u32,             // Size of path table
+    pub loc_type_l_table: u32,            // LBA loc little-endian
+    pub loc_opt_type_l: u32,              // optional LBA loc, 0x00 or path, little-endian
+    pub loc_type_m_table: u32,            // LBA loc path table - big-endian
+    pub loc_opt_type_m: u32,              // optional LBA loc, 0x00 or path, big-endian
+    pub root_dir_entry: &'a [u8; 34], // Directory entry for the root directory	-	Note that this is not an LBA address, it is the actual Directory Record, which contains a single byte Directory Identifier (0x00), hence the fixed 34 byte size.
+    pub vol_set_ident: &'a [u8; 128], // Identifier of the volume set of which this volume is a member.
+    pub publisher_ident: &'a [u8; 128], // The volume publisher. For extended publisher information, the first byte should be 0x5F, followed by the filename of a file in the root directory. If not specified, all bytes should be 0x20.
+    pub data_prep_ident: &'a [u8; 128], // The identifier of the person(s) who prepared the data for this volume. For extended preparation information, the first byte should be 0x5F, followed by the filename of a file in the root directory. If not specified, all bytes should be 0x20.
+    pub application_ident: &'a [u8; 128], // Identifies how the data are recorded on this volume. For extended information, the first byte should be 0x5F, followed by the filename of a file in the root directory. If not specified, all bytes should be 0x20.
+    pub copyright_ident: &'a [u8; 37], // Filename of a file in the root directory that contains copyright information for this volume set. If not specified, all bytes should be 0x20.
+    pub abstract_ident: &'a [u8; 37], // Filename of a file in the root directory that contains abstract information for this volume set. If not specified, all bytes should be 0x20.
+    pub bib_ident: &'a [u8; 37], // Filename of a file in the root directory that contains bibliographic information for this volume set. If not specified, all bytes should be 0x20.
     //pub vol_creation_date:  u8,        // Datetime - The date and time of when the volume was created.
     //pub vol_mod_date:       u8,        // Datetime - The date and time of when the volume was modified.
     //pub vol_exp_date:       u8,        // Datetime - The date and time after which this volume is considered to be obsolete. If not specified, then the volume is never considered to be obsolete.
     //pub vol_effec_date:     u8,        // Datetime - The date and time after which the volume may be used. If not specified, the volume may be used immediately.
-    pub file_struct_ver:    u8,        // 0x01.
-                                       // [0x00 ; 512]
-    pub reserved:           [u8 ; 653],// Reserved [0x?? ; 653]
+    pub file_struct_ver: u8, // 0x01.
+    // [0x00 ; 512]
+    pub reserved: &'a [u8; 653], // Reserved [0x?? ; 653]
+}
+
+impl<'a> TryFrom<&'a [u8; 2048]> for PrimaryVolumeDescriptorData<'a> {
+    type Error = Box<dyn Error>;
+
+    fn try_from(buf: &'a [u8; 2048]) -> Result<Self, Self::Error> {
+        Ok(Self {
+            t_code: buf[0],
+            std_ident: buf[1..1 + 5].try_into()?,
+            version: buf[6],
+            sys_ident: buf[8..8 + 32].try_into()?,
+            vol_ident: buf[40..40 + 32].try_into()?,
+            vol_space_size: parse_int32_lsb_msb(buf[80..80 + 8].try_into()?),
+            vol_set_size: parse_int16_lsb_msb(buf[120..120 + 4].try_into()?),
+            vol_seq_num: parse_int16_lsb_msb(buf[124..124 + 4].try_into()?),
+            logic_block_size: parse_int16_lsb_msb(buf[128..128 + 4].try_into()?),
+            path_table_size: parse_int32_lsb_msb(&buf[132..132 + 8].try_into()?),
+            loc_type_l_table: parse_int32_lsb(buf[140..140 + 4].try_into()?),
+            loc_opt_type_l: parse_int32_lsb(buf[144..144 + 4].try_into()?),
+            loc_type_m_table: parse_int32_msb(buf[148..148 + 4].try_into()?),
+            loc_opt_type_m: parse_int32_msb(buf[152..152 + 4].try_into()?),
+            root_dir_entry: buf[156..156 + 34].try_into()?,
+            vol_set_ident: buf[190..190 + 128].try_into()?,
+            publisher_ident: buf[318..318 + 128].try_into()?,
+            data_prep_ident: buf[446..446 + 128].try_into()?,
+            application_ident: buf[574..574 + 128].try_into()?,
+            copyright_ident: buf[702..702 + 37].try_into()?,
+            abstract_ident: buf[739..739 + 37].try_into()?,
+            bib_ident: buf[776..776 + 37].try_into()?,
+            //pub vol_creation_date:  u8,
+            //pub vol_mod_date:       u8,
+            //pub vol_exp_date:       u8,
+            //pub vol_effec_date:     u8,
+            file_struct_ver: buf[881],
+            // [0x00 ; 512]
+            reserved: buf[1395..1395 + 653].try_into()?,
+        })
+    }
 }
 pub struct ISO9660 {}
 
@@ -73,11 +112,10 @@ impl Find for ISO9660 {
         let mut primary_descriptor: Vec<u8> = vec![0u8; 0x800];
         info!("Espaço para o PVD Alocado");
 
-        //LBA 0 - 15 System Area 
+        //LBA 0 - 15 System Area
 
         //LBA 16 - Primary Volume Descriptor
         read_raw_drive(DriveType::Removable, 16, &mut primary_descriptor)?;
-
 
         //Erro customizado
         if !ISO9660::validate_pvd(&primary_descriptor) {
@@ -86,11 +124,43 @@ impl Find for ISO9660 {
             }));
         }
 
-        //Sessão que faria qualquer dev rust sério querer me matar : 
+        //Sessão que faria qualquer dev rust sério querer me matar :
+        let array_ref: &[u8; 2048] = &primary_descriptor.as_slice().try_into()?;
 
+        let pvd_data: PrimaryVolumeDescriptorData<'_> = PrimaryVolumeDescriptorData::try_from(array_ref)?;
+        
+        info!("{:#?}", pvd_data);
 
         loop {}
+
+        todo!("Não acabei ainda, qualquer Loop é de propósito");
     }
+}
+
+/// Converte um campo both-endian de 8 bytes (sint32_LSB-MSB) para i32 (Signed)
+pub fn parse_sint32_lsb_msb(bytes: &[u8; 8]) -> i32 {
+    // Pega os primeiros 4 bytes (Little-Endian) e ignora os 4 finais (Big-Endian)
+    let le_chunk: [u8; 4] = bytes[0..4].try_into().unwrap();
+    i32::from_le_bytes(le_chunk)
+}
+
+/// Converte um campo both-endian de 8 bytes (int32_LSB-MSB) para u32 (Unsighed)
+pub fn parse_int32_lsb_msb(bytes: &[u8; 8]) -> u32 {
+    let le_chunk: [u8; 4] = bytes[0..4].try_into().unwrap();
+    u32::from_le_bytes(le_chunk)
+}
+
+pub fn parse_int16_lsb_msb(bytes: &[u8; 4]) -> u16 {
+    let le_chunk: [u8; 2] = bytes[0..2].try_into().unwrap();
+    u16::from_le_bytes(le_chunk)
+}
+
+pub fn parse_int32_lsb(bytes: &[u8; 4]) -> u32 {
+    u32::from_le_bytes(*bytes)
+}
+
+pub fn parse_int32_msb(bytes: &[u8; 4]) -> u32 {
+    u32::from_be_bytes(*bytes)
 }
 
 /*
